@@ -2,11 +2,8 @@
 import json
 import os
 import uuid
-import time
+import asyncio
 import logging
-import hmac
-import hashlib
-import base64
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
@@ -14,8 +11,10 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Dial
-import jwt
-import requests
+from livekit import api
+from livekit.api import LiveKitAPI
+from livekit.protocol.agent_dispatch import RoomAgentDispatch
+from livekit.protocol.room import RoomConfiguration
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -128,76 +127,30 @@ def initiate_call():
                 "prompt": prompt
             })
             
-            # Generate LiveKit JWT token for REST API authentication
-            def generate_livekit_token(api_key, api_secret, room_name, identity="server"):
-                """Generate LiveKit access token for REST API"""
-                now = int(time.time())
-                exp = now + 3600  # 1 hour expiry
-                
-                # Create JWT claims (LiveKit format)
-                claims = {
-                    "iss": api_key,
-                    "exp": exp,
-                    "nbf": now - 5,
-                    "sub": identity,
-                    "video": {
-                        "room": room_name,
-                        "roomJoin": True,
-                        "canPublish": True,
-                        "canSubscribe": True,
-                        "canUpdateOwnMetadata": True
-                    }
-                }
-                
-                # Encode JWT token
-                token = jwt.encode(claims, api_secret, algorithm="HS256")
-                return token
+            # Use LiveKit SDK to create room (same pattern as Companion project)
+            # Create LiveKit API client
+            lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
             
-            # Generate token
-            token = generate_livekit_token(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, room_name)
-            
-            # Create room via REST API
-            room_url = f"{LIVEKIT_HTTP}/twirp/livekit.RoomService/CreateRoom"
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            
-            # Prepare room configuration
-            room_config = {
-                "name": room_name,
-                "metadata": room_metadata,
-                "empty_timeout": 300,
-                "max_participants": 10
-            }
-            
-            # Make synchronous HTTP request
-            response = requests.post(room_url, json=room_config, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name}")
-                
-                # Dispatch agent to the room (separate API call)
+            # Create room with agent dispatch using async API
+            # Use asyncio.run() like in Companion project (lines 169, 173, 190)
+            async def create_room_with_agent():
+                """Create LiveKit room with agent dispatch"""
                 try:
-                    dispatch_url = f"{LIVEKIT_HTTP}/twirp/livekit.AgentService/AgentDispatch"
-                    dispatch_payload = {
-                        "room": room_name,
-                        "agent_name": LIVEKIT_AGENT_NAME
-                    }
-                    dispatch_response = requests.post(dispatch_url, json=dispatch_payload, headers=headers, timeout=10)
-                    if dispatch_response.status_code == 200:
-                        app.logger.info(f"✅ [initiate_call] Agent {LIVEKIT_AGENT_NAME} dispatched to room")
-                    else:
-                        app.logger.warning(f"⚠️ [initiate_call] Agent dispatch returned: {dispatch_response.status_code} - {dispatch_response.text}")
-                except Exception as dispatch_error:
-                    app.logger.warning(f"⚠️ [initiate_call] Agent dispatch error (non-critical): {dispatch_error}")
-            else:
-                app.logger.error(f"❌ [initiate_call] LiveKit room creation failed: {response.status_code} - {response.text}")
-                return jsonify(
-                    success=False,
-                    error=f"Failed to create LiveKit room: {response.text}",
-                    call_id=call_id
-                ), 500
+                    room = await lk_api.room.create_room(
+                        name=room_name,
+                        metadata=room_metadata,
+                        configuration=RoomConfiguration(
+                            agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
+                        )
+                    )
+                    return room
+                finally:
+                    await lk_api.aclose()
+            
+            # Run async function (same pattern as Companion project)
+            room = asyncio.run(create_room_with_agent())
+            
+            app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
             
         except Exception as e:
             app.logger.error(f"❌ [initiate_call] LiveKit room creation error: {e}")
