@@ -4,6 +4,7 @@ import os
 import uuid
 import asyncio
 import logging
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
@@ -76,7 +77,7 @@ def root():
     return jsonify(service="Callcenter API", version="1.0.0"), 200
 
 # Generate unique room name
-async def generate_room_name() -> str:
+def generate_room_name() -> str:
     """Generate unique LiveKit room name"""
     return f"call_{uuid.uuid4().hex[:8]}"
 
@@ -95,7 +96,7 @@ def initiate_call():
         
         # Generate call ID and room name
         call_id = str(uuid.uuid4())
-        room_name = asyncio.run(generate_room_name())
+        room_name = generate_room_name()
         
         # Clean phone number for Twilio (E.164 format)
         phone_cleaned = phone_number
@@ -130,13 +131,27 @@ def initiate_call():
             })
             
             # Create room via API with agent dispatch (agent name from .env)
-            asyncio.run(lk_api.room.create_room(
-                name=room_name,
-                metadata=room_metadata,
-                configuration=RoomConfiguration(
-                    agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
-                )
-            ))
+            # Run async code in a new event loop (thread-safe for Flask)
+            def run_async():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(
+                        lk_api.room.create_room(
+                            name=room_name,
+                            metadata=room_metadata,
+                            configuration=RoomConfiguration(
+                                agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
+                            )
+                        )
+                    )
+                finally:
+                    new_loop.close()
+            
+            # Execute in thread to avoid blocking Flask
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_async)
+                future.result(timeout=10)  # 10 second timeout
             
             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
             
