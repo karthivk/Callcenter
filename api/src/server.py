@@ -4,6 +4,7 @@ import os
 import uuid
 import asyncio
 import logging
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
@@ -127,28 +128,40 @@ def initiate_call():
                 "prompt": prompt
             })
             
-            # Use LiveKit SDK to create room (same pattern as Companion project)
-            # Create LiveKit API client
-            lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-            
-            # Create room with agent dispatch using async API
-            # Use asyncio.run() like in Companion project (lines 169, 173, 190)
-            async def create_room_with_agent():
-                """Create LiveKit room with agent dispatch"""
+            # Use LiveKit SDK to create room
+            # Handle async code in Flask using thread with new event loop
+            def create_room_sync():
+                """Run async room creation in a new event loop (thread-safe)"""
+                # Create a new event loop in this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
                 try:
-                    room = await lk_api.room.create_room(
-                        name=room_name,
-                        metadata=room_metadata,
-                        configuration=RoomConfiguration(
-                            agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
-                        )
-                    )
-                    return room
+                    # Create LiveKit API client
+                    lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+                    
+                    async def create_room_with_agent():
+                        """Create LiveKit room with agent dispatch"""
+                        try:
+                            room = await lk_api.room.create_room(
+                                name=room_name,
+                                metadata=room_metadata,
+                                configuration=RoomConfiguration(
+                                    agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
+                                )
+                            )
+                            return room
+                        finally:
+                            await lk_api.aclose()
+                    
+                    # Run in the new event loop
+                    return new_loop.run_until_complete(create_room_with_agent())
                 finally:
-                    await lk_api.aclose()
+                    new_loop.close()
             
-            # Run async function (same pattern as Companion project)
-            room = asyncio.run(create_room_with_agent())
+            # Execute in a thread to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(create_room_sync)
+                room = future.result(timeout=10)
             
             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
             
