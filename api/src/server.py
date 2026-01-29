@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.voice_response import VoiceResponse, Dial
 import jwt
-import time
+import requests
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
