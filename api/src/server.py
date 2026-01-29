@@ -4,7 +4,7 @@ import os
 import uuid
 import asyncio
 import logging
-import nest_asyncio
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
@@ -16,9 +16,6 @@ from livekit import api
 from livekit.api import LiveKitAPI
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
 from livekit.protocol.room import RoomConfiguration
-
-# Enable nested event loops (allows asyncio.run() in Flask)
-nest_asyncio.apply()
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -132,25 +129,40 @@ def initiate_call():
             })
             
             # Use LiveKit SDK to create room
-            # nest_asyncio allows us to use asyncio.run() in Flask
-            lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+            # Always use thread-based approach to completely isolate from Flask
+            import concurrent.futures
             
-            async def create_room_with_agent():
-                """Create LiveKit room with agent dispatch"""
+            def create_room_in_thread():
+                """Create room in a separate thread with its own event loop"""
+                # Create a completely new event loop in this thread
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
                 try:
-                    room = await lk_api.room.create_room(
-                        name=room_name,
-                        metadata=room_metadata,
-                        configuration=RoomConfiguration(
-                            agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
-                        )
-                    )
-                    return room
+                    async def create_room_async():
+                        """Create LiveKit room with agent dispatch"""
+                        # Create LiveKit API client inside async context
+                        lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+                        try:
+                            room = await lk_api.room.create_room(
+                                name=room_name,
+                                metadata=room_metadata,
+                                configuration=RoomConfiguration(
+                                    agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
+                                )
+                            )
+                            return room
+                        finally:
+                            await lk_api.aclose()
+                    
+                    # Run async function in the new event loop
+                    return new_loop.run_until_complete(create_room_async())
                 finally:
-                    await lk_api.aclose()
+                    new_loop.close()
             
-            # Run async function (nest_asyncio allows this in Flask)
-            room = asyncio.run(create_room_with_agent())
+            # Execute in thread to completely isolate from Flask's event loop
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(create_room_in_thread)
+                room = future.result(timeout=10)
             
             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
             
