@@ -4,7 +4,7 @@ import os
 import uuid
 import asyncio
 import logging
-import concurrent.futures
+import nest_asyncio
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, Response
@@ -16,6 +16,9 @@ from livekit import api
 from livekit.api import LiveKitAPI
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
 from livekit.protocol.room import RoomConfiguration
+
+# Enable nested event loops for Flask + asyncio
+nest_asyncio.apply()
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -131,27 +134,16 @@ def initiate_call():
             })
             
             # Create room via API with agent dispatch (agent name from .env)
-            # Run async code in a new event loop (thread-safe for Flask)
-            def run_async():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    return new_loop.run_until_complete(
-                        lk_api.room.create_room(
-                            name=room_name,
-                            metadata=room_metadata,
-                            configuration=RoomConfiguration(
-                                agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
-                            )
-                        )
+            # nest_asyncio allows us to use asyncio.run() in Flask
+            asyncio.run(
+                lk_api.room.create_room(
+                    name=room_name,
+                    metadata=room_metadata,
+                    configuration=RoomConfiguration(
+                        agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
                     )
-                finally:
-                    new_loop.close()
-            
-            # Execute in thread to avoid blocking Flask
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(run_async)
-                future.result(timeout=10)  # 10 second timeout
+                )
+            )
             
             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
             
