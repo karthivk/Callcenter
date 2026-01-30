@@ -14,6 +14,7 @@ if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
 
 from dotenv import load_dotenv
+import httpx
 from livekit import agents, rtc
 from livekit.agents import AgentSession, Agent
 from livekit.plugins import google, noise_cancellation
@@ -33,10 +34,35 @@ async def entrypoint(ctx: agents.JobContext):
     """Minimal agent for LiveKit phone calls"""
     logging.info(f"📞 Agent connecting to room: {ctx.room.name}")
     
-    # Use environment variables or defaults (no API calls, no metadata)
+    # Fetch call configuration from backend API using room name
+    api_base_url = os.getenv("API_BASE_URL", "http://localhost:8081")
+    room_name = ctx.room.name
+    
+    # Default values (fallback if API call fails)
     language = os.getenv("CALL_LANGUAGE", "en-US")
     language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
     prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
+    
+    # Try to fetch config from API
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            config_url = f"{api_base_url}/call/config?room_name={room_name}"
+            logging.info(f"📞 Fetching call config from: {config_url}")
+            response = await client.get(config_url)
+            
+            if response.status_code == 200:
+                config_data = response.json()
+                if config_data.get("success"):
+                    language = config_data.get("language", language)
+                    language_name = config_data.get("language_name", language_name)
+                    prompt = config_data.get("prompt", prompt)
+                    logging.info(f"✅ [agent] Fetched config from API - Language: {language_name}, Prompt: {prompt[:50]}...")
+                else:
+                    logging.warning(f"⚠️ [agent] API returned success=false, using defaults")
+            else:
+                logging.warning(f"⚠️ [agent] API returned status {response.status_code}, using defaults")
+    except Exception as e:
+        logging.warning(f"⚠️ [agent] Failed to fetch config from API: {e}, using defaults")
     
     logging.info(f"📞 Call config - Language: {language_name}, Prompt: {prompt[:50]}...")
     
