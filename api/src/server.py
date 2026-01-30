@@ -135,34 +135,26 @@ def initiate_call():
         if not phone_number or not prompt:
             return jsonify(success=False, error="phone_number and prompt required"), 400
         
-        # Generate call ID and room name (with collision check)
+        # Generate call ID
         call_id = str(uuid.uuid4())
         
-        # Generate room name based on Twilio phone number (caller number)
-        # Dispatch rule pattern is call_<caller-number>, where caller is the Twilio number making the SIP call
+        # Dispatch rule will automatically create room when SIP call arrives
+        # Room name will be: call_<caller-number> where caller-number is from SIP call
         if not TWILIO_PHONE_NUMBER:
             return jsonify(success=False, error="TWILIO_PHONE_NUMBER not configured"), 500
-        
-        app.logger.info(f"📋 [initiate_call] Using Twilio number (caller) for room name: {TWILIO_PHONE_NUMBER}")
-        app.logger.info(f"📋 [initiate_call] End user number (called): {phone_number}")
-        
-        def get_room_name():
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            try:
-                # Use Twilio phone number (the SIP caller) for room name
-                return new_loop.run_until_complete(generate_room_name(TWILIO_PHONE_NUMBER))
-            finally:
-                new_loop.close()
-        
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(get_room_name)
-            room_name = future.result(timeout=5)
         
         # Clean phone number for Twilio (E.164 format)
         phone_cleaned = phone_number
         if not phone_cleaned.startswith('+'):
             phone_cleaned = '+' + phone_cleaned.lstrip('+').replace(' ', '').replace('-', '')
+        
+        # Clean Twilio number for room name prediction (for config storage)
+        twilio_cleaned = TWILIO_PHONE_NUMBER.replace('+', '').replace(' ', '').replace('-', '')
+        predicted_room_name = f"call_{twilio_cleaned}"
+        
+        app.logger.info(f"📋 [initiate_call] Twilio number (caller): {TWILIO_PHONE_NUMBER}")
+        app.logger.info(f"📋 [initiate_call] End user number (called): {phone_number}")
+        app.logger.info(f"📋 [initiate_call] Predicted room name: {predicted_room_name} (will be created by dispatch rule)")
         
         # Store call info in memory (by call_id)
         call_status[call_id] = {
@@ -171,13 +163,15 @@ def initiate_call():
             'language': language,
             'language_name': language_name,
             'prompt': prompt,
-            'room_name': room_name,
+            'room_name': predicted_room_name,  # Predicted, actual will be created by dispatch rule
             'twilio_call_sid': None,
             'created_at': datetime.now().isoformat()
         }
         
-        # Store call config by room_name for agent lookup (simpler than room metadata)
-        room_config[room_name] = {
+        # Store call config by predicted room name for agent lookup
+        # The dispatch rule will create a room with name like call_<caller-number>
+        # We predict it will be call_<twilio-number> based on the SIP caller
+        room_config[predicted_room_name] = {
             'phone': phone_number,
             'language': language,
             'language_name': language_name,
@@ -185,87 +179,15 @@ def initiate_call():
             'call_id': call_id
         }
         
-        app.logger.info(f"📞 [initiate_call] Initiating call: {phone_number} -> {room_name}")
+        app.logger.info(f"📞 [initiate_call] Initiating call: {phone_number}")
+        app.logger.info(f"📋 [initiate_call] Room will be created automatically by dispatch rule when SIP call arrives")
+        app.logger.info(f"📋 [initiate_call] Dispatch rule pattern: call_<caller-number>")
         
-        # Create LiveKit room with metadata using REST API (synchronous HTTP)
-        try:
-            # Create room with metadata
-            room_metadata = json.dumps({
-                "call_id": call_id,
-                "phone": phone_number,
-                "language": language,
-                "language_name": language_name,
-                "prompt": prompt
-            })
-            
-            # Use LiveKit SDK to create room
-            # Always use thread-based approach to completely isolate from Flask
-            def create_room_in_thread():
-                """Create room in a separate thread with its own event loop"""
-                # Create a completely new event loop in this thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    async def create_room_async():
-                        """Create LiveKit room with agent dispatch"""
-                        # Create LiveKit API client inside async context
-                        lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
-                        try:
-                            # Create room using CreateRoomRequest
-                            # Set fields directly on the request object
-                            request = CreateRoomRequest()
-                            request.name = room_name
-                            request.metadata = room_metadata
-                            
-                            # Add agent dispatch directly to agents field
-                            agent = RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)
-                            request.agents.append(agent)
-                            
-                            room = await lk_api.room.create_room(request)
-                            
-                            # Update room metadata after creation to ensure it's persisted
-                            # Sometimes metadata needs to be set after room creation
-                            try:
-                                update_request = UpdateRoomMetadataRequest()
-                                update_request.room = room_name
-                                update_request.metadata = room_metadata
-                                await lk_api.room.update_room_metadata(update_request)
-                                logging.info(f"✅ [initiate_call] Room metadata updated after creation")
-                            except Exception as update_error:
-                                # Log but don't fail if update fails - metadata should still be set on creation
-                                logging.warning(f"⚠️ Could not update room metadata (this is OK if metadata was set on creation): {update_error}")
-                            
-                            return room
-                        finally:
-                            await lk_api.aclose()
-                    
-                    # Run async function in the new event loop
-                    return new_loop.run_until_complete(create_room_async())
-                finally:
-                    new_loop.close()
-            
-            # Execute in thread to completely isolate from Flask's event loop
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(create_room_in_thread)
-                room = future.result(timeout=10)
-            
-            # Log room details to verify metadata was set
-            app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
-            app.logger.info(f"📋 [initiate_call] Room metadata set: {room_metadata}")
-            if hasattr(room, 'metadata'):
-                app.logger.info(f"📋 [initiate_call] Room metadata (from response): {room.metadata}")
-            if hasattr(room, 'name'):
-                app.logger.info(f"📋 [initiate_call] Room name (from response): {room.name}")
-            
-        except Exception as e:
-            app.logger.error(f"❌ [initiate_call] LiveKit room creation error: {e}")
-            import traceback
-            app.logger.error(traceback.format_exc())
-            return jsonify(
-                success=False,
-                error=f"Failed to create LiveKit room: {str(e)}",
-                call_id=call_id
-            ), 500
+        # Note: We don't pre-create the room anymore
+        # The dispatch rule will automatically create the room when the SIP call arrives
+        # The room name will be generated by LiveKit based on the dispatch rule's room_prefix
+        # and the caller number from the SIP call
+        # The agent will be automatically dispatched by the dispatch rule's room_config
         
         # Initiate Twilio outbound call
         if not twilio_client:
@@ -273,9 +195,9 @@ def initiate_call():
             return jsonify(
                 success=True,
                 call_id=call_id,
-                room_name=room_name,
-                status='room_created',
-                message='Room created but Twilio not configured'
+                predicted_room_name=predicted_room_name,
+                status='ready',
+                message='Ready for call. Room will be created automatically by dispatch rule when call arrives.'
             )
         
         if not TWILIO_PHONE_NUMBER:
@@ -296,7 +218,7 @@ def initiate_call():
                 call_id=call_id
             ), 500
         
-        webhook_url = f"{api_base}/webhook/twilio/answer?call_id={call_id}&room_name={room_name}"
+        webhook_url = f"{api_base}/webhook/twilio/answer?call_id={call_id}"
         status_callback = f"{api_base}/webhook/twilio/status"
         
         app.logger.info(f"📞 [initiate_call] Webhook URL: {webhook_url}")
@@ -321,10 +243,10 @@ def initiate_call():
             return jsonify(
                 success=True,
                 call_id=call_id,
-                room_name=room_name,
+                predicted_room_name=predicted_room_name,  # Room will be created by dispatch rule
                 twilio_call_sid=call.sid,
                 status='queued',
-                message='Call initiated successfully'
+                message='Call initiated successfully. Room will be created automatically by dispatch rule.'
             )
                 
         except Exception as e:
@@ -345,27 +267,21 @@ def twilio_answer():
     """Handle Twilio webhook when call is answered - return TwiML to connect to LiveKit"""
     try:
         call_id = request.args.get('call_id')
-        room_name = request.args.get('room_name')
         call_sid = request.form.get('CallSid')
         
-        app.logger.info(f"📥 [twilio_answer] Call answered: {call_sid}, Room: {room_name}, Call ID: {call_id}")
+        app.logger.info(f"📥 [twilio_answer] Call answered: {call_sid}, Call ID: {call_id}")
         app.logger.info(f"📥 [twilio_answer] Request args: {dict(request.args)}")
         app.logger.info(f"📥 [twilio_answer] Request form: {dict(request.form)}")
+        app.logger.info(f"📥 [twilio_answer] Dispatch rule will create room automatically when SIP call arrives")
         
         if call_id and call_id in call_status:
             call_status[call_id]['status'] = 'answered'
         
-        # Validate room_name
-        if not room_name:
-            app.logger.error("❌ [twilio_answer] Missing room_name in request")
-            response = VoiceResponse()
-            response.say("Sorry, there was an error connecting the call. Missing room information.")
-            return Response(str(response), mimetype='text/xml')
-        
         # If LiveKit SIP endpoint is configured, connect via SIP
+        # NEW APPROACH: Don't specify room name in SIP URI - let dispatch rule create and route
         if LIVEKIT_SIP_ENDPOINT:
             # Create TwiML to dial LiveKit SIP endpoint
-            # Format: sip:room_name@livekit_sip_endpoint
+            # Format: sip:@livekit_sip_endpoint (no room name - dispatch rule will handle routing)
             # Remove any protocol prefix if present
             sip_endpoint = LIVEKIT_SIP_ENDPOINT.strip()
             if sip_endpoint.startswith('sip:'):
@@ -373,31 +289,30 @@ def twilio_answer():
             if sip_endpoint.startswith('@'):
                 sip_endpoint = sip_endpoint[1:]
             
-            # Get phone number from call status for SIP URI (some systems require it)
+            # Get phone number from call status for logging
             phone_number = None
             if call_id and call_id in call_status:
-                phone_number = call_status[call_id].get('phone', '').replace('+', '').replace(' ', '').replace('-', '')
+                phone_number = call_status[call_id].get('phone', '')
             
-            # Format: sip:room_name@livekit_sip_endpoint
-            # Alternative format with phone: sip:room_name+phone@livekit_sip_endpoint (if needed)
-            sip_uri = f"{room_name}@{sip_endpoint}"
+            # SIP URI: Just the endpoint - dispatch rule will create room and route based on caller number
+            # The dispatch rule pattern call_<caller-number> will be used to create the room
+            sip_uri = f"@{sip_endpoint}"
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
-            app.logger.info(f"📋 [twilio_answer] Room name: {room_name}, SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
-            app.logger.info(f"📋 [twilio_answer] SIP URI format: sip:{room_name}@{sip_endpoint}")
-            app.logger.info(f"📋 [twilio_answer] ⚠️ If you get 404, check: 1) Dispatch rule matches 'call_' pattern, 2) SIP trunk is active, 3) Room exists")
+            app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
+            app.logger.info(f"📋 [twilio_answer] Dispatch rule will create room automatically based on caller number")
+            app.logger.info(f"📋 [twilio_answer] Expected room name pattern: call_<caller-number>")
             
             response = VoiceResponse()
             dial = Dial(
                 timeout=30,  # Wait up to 30 seconds for connection
-                action=f"{API_BASE_URL}/webhook/twilio/dial-status?call_id={call_id}&room_name={room_name}",
+                action=f"{API_BASE_URL}/webhook/twilio/dial-status?call_id={call_id}",
                 method='POST',
                 hangupOnStar=False,
                 record=False
             )
-            # Add SIP URI - format: sip:room_name@livekit_sip_endpoint
-            # For LiveKit Cloud inbound calls, the room name should match the dispatch rule pattern
-            # The dispatch rule should have pattern: "call_" (with underscore)
+            # Add SIP URI - just the endpoint, no room name
+            # Dispatch rule will automatically create room and dispatch agent
             dial.sip(sip_uri)
             response.append(dial)
             
@@ -426,17 +341,16 @@ def twilio_dial_status():
     try:
         data = request.form.to_dict()
         call_id = request.args.get('call_id')
-        room_name = request.args.get('room_name')
         dial_call_status = data.get('DialCallStatus')
         dial_call_sid = data.get('DialCallSid')
         dial_call_duration = data.get('DialCallDuration')
         
-        app.logger.info(f"📥 [twilio_dial_status] Dial status: {dial_call_status}, Room: {room_name}, Call ID: {call_id}")
+        app.logger.info(f"📥 [twilio_dial_status] Dial status: {dial_call_status}, Call ID: {call_id}")
         app.logger.info(f"📥 [twilio_dial_status] Dial Call SID: {dial_call_sid}, Duration: {dial_call_duration}")
         app.logger.info(f"📥 [twilio_dial_status] Full data: {data}")
         
         if dial_call_status == 'failed':
-            app.logger.error(f"❌ [twilio_dial_status] SIP connection failed for room {room_name}")
+            app.logger.error(f"❌ [twilio_dial_status] SIP connection failed for call {call_id}")
             if call_id and call_id in call_status:
                 call_status[call_id]['status'] = 'sip_failed'
         
