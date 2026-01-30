@@ -181,9 +181,11 @@ def initiate_call():
         
         app.logger.info(f"📞 [initiate_call] Initiating call: {phone_number}")
         app.logger.info(f"📋 [initiate_call] Pre-creating room: {predicted_room_name} (matches dispatch rule pattern)")
+        app.logger.info(f"📋 [initiate_call] ⚠️ CRITICAL: If room creation fails, check LiveKit API credentials and network")
         
         # Pre-create the room with agent dispatch so dispatch rule can match it
         # The room name matches the dispatch rule pattern: call_<caller-number>
+        room_created = False
         try:
             def create_room_in_thread():
                 """Create room in a separate thread with its own event loop"""
@@ -203,6 +205,7 @@ def initiate_call():
                             
                             room = await lk_api.room.create_room(request)
                             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room.name} with agent: {LIVEKIT_AGENT_NAME}")
+                            room_created = True
                             return room
                         finally:
                             await lk_api.aclose()
