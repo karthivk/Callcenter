@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import requests
 from pathlib import Path
 
 # IMPORTANT: Unset GOOGLE_APPLICATION_CREDENTIALS BEFORE any Google imports
@@ -33,38 +34,39 @@ logging.basicConfig(level=logging.INFO)
 async def entrypoint(ctx: agents.JobContext):
     """Minimal agent for LiveKit phone calls"""
     logging.info(f"📞 Agent connecting to room: {ctx.room.name}")
-    logging.info(f"📞 Room metadata (raw): {repr(ctx.room.metadata)}")
     
-    # Get call configuration from room metadata
-    room_metadata = ctx.room.metadata or "{}"
-    logging.info(f"📞 Room metadata (processed): {room_metadata}")
+    # Get call configuration from API (simpler than room metadata)
+    room_name = ctx.room.name
+    api_base_url = os.getenv("API_BASE_URL", "http://localhost:8081")
+    
+    # Try to fetch call config from API
+    language = os.getenv("CALL_LANGUAGE", "en-US")
+    language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
+    prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
+    phone = "unknown"
+    call_id = "unknown"
     
     try:
-        metadata = json.loads(room_metadata)
-        language = metadata.get('language', 'en-US')
-        language_name = metadata.get('language_name', 'English')
-        prompt = metadata.get('prompt', 'You are a helpful assistant.')
-        phone = metadata.get('phone', 'unknown')
-        call_id = metadata.get('call_id', 'unknown')
-        
-        logging.info(f"📞 Call config - Phone: {phone}, Language: {language_name}, Call ID: {call_id}, Prompt: {prompt[:50]}...")
-    except json.JSONDecodeError as e:
-        # Fallback to environment variables or defaults
-        logging.error(f"❌ Could not parse room metadata as JSON: {e}")
-        logging.error(f"❌ Raw metadata was: {repr(room_metadata)}")
-        language = os.getenv("CALL_LANGUAGE", "en-US")
-        language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
-        prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
-        logging.warning(f"⚠️ Using defaults - Language: {language_name}, Prompt: {prompt[:50]}...")
+        config_url = f"{api_base_url}/call/config?room_name={room_name}"
+        logging.info(f"📞 Fetching call config from: {config_url}")
+        response = requests.get(config_url, timeout=5)
+        if response.status_code == 200:
+            config = response.json()
+            if config.get('success'):
+                language = config.get('language', language)
+                language_name = config.get('language_name', language_name)
+                prompt = config.get('prompt', prompt)
+                phone = config.get('phone', phone)
+                call_id = config.get('call_id', call_id)
+                logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
+            else:
+                logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
+        else:
+            logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
     except Exception as e:
-        # Fallback to environment variables or defaults
-        logging.error(f"❌ Unexpected error parsing room metadata: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        language = os.getenv("CALL_LANGUAGE", "en-US")
-        language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
-        prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
-        logging.warning(f"⚠️ Using defaults - Language: {language_name}, Prompt: {prompt[:50]}...")
+        logging.warning(f"⚠️ Could not fetch call config from API: {e}, using defaults")
+    
+    logging.info(f"📞 Call config - Phone: {phone}, Language: {language_name}, Call ID: {call_id}, Prompt: {prompt[:50]}...")
     
     # Determine voice based on language
     voice_map = {
