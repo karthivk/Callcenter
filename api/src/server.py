@@ -333,22 +333,25 @@ def twilio_answer():
                 phone_number = call_status[call_id].get('phone', '')
             
             # Get Twilio caller number from request (the "From" field in SIP call)
+            # The dispatch rule will extract this from the SIP "From" header to create/find the room
             twilio_caller = request.form.get('From', TWILIO_PHONE_NUMBER)
             if not twilio_caller:
                 twilio_caller = TWILIO_PHONE_NUMBER
             
-            # Clean Twilio caller number for room name
+            # Clean Twilio caller number for room name prediction
             twilio_cleaned = twilio_caller.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
-            room_name = f"call_{twilio_cleaned}"
+            expected_room_name = f"call_{twilio_cleaned}"
             
-            # SIP URI: Include room name so LiveKit can route to the existing room
-            # Format: room_name@domain (matches the room that was pre-created)
-            sip_uri = f"{room_name}@{sip_endpoint}"
+            # SIP URI: Just the domain - dispatch rule extracts room name from SIP "From" header
+            # The dispatch rule pattern call_<caller-number> will extract caller from "From" header
+            # Room should already exist from initiate_call, so dispatch rule will route to it
+            sip_uri = sip_endpoint  # Just domain - let dispatch rule extract caller from "From" header
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
             app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
-            app.logger.info(f"📋 [twilio_answer] Twilio caller: {twilio_caller} -> cleaned: {twilio_cleaned}")
-            app.logger.info(f"📋 [twilio_answer] Room name in SIP URI: {room_name} (room should exist from initiate_call)")
+            app.logger.info(f"📋 [twilio_answer] Twilio caller (From header): {twilio_caller} -> cleaned: {twilio_cleaned}")
+            app.logger.info(f"📋 [twilio_answer] Dispatch rule will extract caller from SIP 'From' header")
+            app.logger.info(f"📋 [twilio_answer] Expected room name: {expected_room_name} (should exist from initiate_call)")
             
             response = VoiceResponse()
             dial = Dial(
