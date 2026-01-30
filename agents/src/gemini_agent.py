@@ -4,6 +4,16 @@ import json
 import logging
 import os
 from pathlib import Path
+
+# IMPORTANT: Unset GOOGLE_APPLICATION_CREDENTIALS BEFORE any Google imports
+# This must happen before importing google.auth or any Google libraries
+# to ensure Application Default Credentials (ADC) is used instead of service account key files
+if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_path:
+        logging.info("⚠️ GOOGLE_APPLICATION_CREDENTIALS is set, unsetting to use ADC instead")
+        os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import AgentSession, Agent
@@ -13,14 +23,22 @@ from livekit.plugins import google, noise_cancellation
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
 load_dotenv(env_path)
 
+# Unset again after loading .env (in case .env set it)
+if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    logging.info("⚠️ GOOGLE_APPLICATION_CREDENTIALS found in .env, unsetting to use ADC")
+    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+
 logging.basicConfig(level=logging.INFO)
 
 async def entrypoint(ctx: agents.JobContext):
-    """Minimal agent for MSG91 phone calls"""
+    """Minimal agent for LiveKit phone calls"""
     logging.info(f"📞 Agent connecting to room: {ctx.room.name}")
+    logging.info(f"📞 Room metadata (raw): {repr(ctx.room.metadata)}")
     
     # Get call configuration from room metadata
     room_metadata = ctx.room.metadata or "{}"
+    logging.info(f"📞 Room metadata (processed): {room_metadata}")
+    
     try:
         metadata = json.loads(room_metadata)
         language = metadata.get('language', 'en-US')
@@ -29,13 +47,24 @@ async def entrypoint(ctx: agents.JobContext):
         phone = metadata.get('phone', 'unknown')
         call_id = metadata.get('call_id', 'unknown')
         
-        logging.info(f"📞 Call config - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
-    except Exception as e:
+        logging.info(f"📞 Call config - Phone: {phone}, Language: {language_name}, Call ID: {call_id}, Prompt: {prompt[:50]}...")
+    except json.JSONDecodeError as e:
         # Fallback to environment variables or defaults
+        logging.error(f"❌ Could not parse room metadata as JSON: {e}")
+        logging.error(f"❌ Raw metadata was: {repr(room_metadata)}")
         language = os.getenv("CALL_LANGUAGE", "en-US")
         language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
         prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
-        logging.warning(f"⚠️ Could not parse room metadata: {e}, using defaults")
+        logging.warning(f"⚠️ Using defaults - Language: {language_name}, Prompt: {prompt[:50]}...")
+    except Exception as e:
+        # Fallback to environment variables or defaults
+        logging.error(f"❌ Unexpected error parsing room metadata: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        language = os.getenv("CALL_LANGUAGE", "en-US")
+        language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
+        prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
+        logging.warning(f"⚠️ Using defaults - Language: {language_name}, Prompt: {prompt[:50]}...")
     
     # Determine voice based on language
     voice_map = {
