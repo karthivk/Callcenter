@@ -162,8 +162,6 @@ def initiate_call():
             
             # Use LiveKit SDK to create room
             # Always use thread-based approach to completely isolate from Flask
-            import concurrent.futures
-            
             def create_room_in_thread():
                 """Create room in a separate thread with its own event loop"""
                 # Create a completely new event loop in this thread
