@@ -1,15 +1,8 @@
 # agents/src/gemini_agent.py
 import asyncio
-import json
 import logging
 import os
 from pathlib import Path
-try:
-    import httpx
-    HAS_HTTPX = True
-except ImportError:
-    HAS_HTTPX = False
-    import requests
 
 # IMPORTANT: Unset GOOGLE_APPLICATION_CREDENTIALS BEFORE any Google imports
 # This must happen before importing google.auth or any Google libraries
@@ -40,59 +33,12 @@ async def entrypoint(ctx: agents.JobContext):
     """Minimal agent for LiveKit phone calls"""
     logging.info(f"📞 Agent connecting to room: {ctx.room.name}")
     
-    # Get call configuration from API (simpler than room metadata)
-    room_name = ctx.room.name
-    api_base_url = os.getenv("API_BASE_URL", "http://localhost:8081")
-    
-    # Try to fetch call config from API
+    # Use environment variables or defaults (no API calls, no metadata)
     language = os.getenv("CALL_LANGUAGE", "en-US")
     language_name = os.getenv("CALL_LANGUAGE_NAME", "English")
     prompt = os.getenv("CALL_PROMPT", "You are a helpful assistant.")
-    phone = "unknown"
-    call_id = "unknown"
     
-    try:
-        config_url = f"{api_base_url}/call/config?room_name={room_name}"
-        logging.info(f"📞 Fetching call config from: {config_url}")
-        
-        # Use async HTTP client if available, otherwise use thread pool for requests
-        if HAS_HTTPX:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(config_url)
-                if response.status_code == 200:
-                    config = response.json()
-                    if config.get('success'):
-                        language = config.get('language', language)
-                        language_name = config.get('language_name', language_name)
-                        prompt = config.get('prompt', prompt)
-                        phone = config.get('phone', phone)
-                        call_id = config.get('call_id', call_id)
-                        logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
-                    else:
-                        logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
-                else:
-                    logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
-        else:
-            # Fallback: run blocking request in thread pool
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: requests.get(config_url, timeout=5))
-            if response.status_code == 200:
-                config = response.json()
-                if config.get('success'):
-                    language = config.get('language', language)
-                    language_name = config.get('language_name', language_name)
-                    prompt = config.get('prompt', prompt)
-                    phone = config.get('phone', phone)
-                    call_id = config.get('call_id', call_id)
-                    logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
-                else:
-                    logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
-            else:
-                logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
-    except Exception as e:
-        logging.warning(f"⚠️ Could not fetch call config from API: {e}, using defaults")
-    
-    logging.info(f"📞 Call config - Phone: {phone}, Language: {language_name}, Call ID: {call_id}, Prompt: {prompt[:50]}...")
+    logging.info(f"📞 Call config - Language: {language_name}, Prompt: {prompt[:50]}...")
     
     # Determine voice based on language
     voice_map = {
