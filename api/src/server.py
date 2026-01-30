@@ -330,25 +330,24 @@ def twilio_answer():
                 phone_number = call_status[call_id].get('phone', '')
             
             # Get Twilio caller number from request (the "From" field in SIP call)
-            # This is the number that will be used by the dispatch rule to create the room
+            # The dispatch rule will extract this from the SIP "From" header to create the room
             twilio_caller = request.form.get('From', TWILIO_PHONE_NUMBER)
             if not twilio_caller:
                 twilio_caller = TWILIO_PHONE_NUMBER
             
-            # Clean Twilio caller number for room name
+            # Clean Twilio caller number for room name prediction
             twilio_cleaned = twilio_caller.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+            predicted_room_name = f"call_{twilio_cleaned}"
             
-            # SIP URI: Include room prefix with caller number to match dispatch rule pattern
-            # Dispatch rule pattern is call_<caller-number>, so SIP URI should be: call_<number>@domain
-            # Format: user@domain where user = call_<caller-number>
-            room_prefix = "call_"  # Must match dispatch rule's roomPrefix
-            sip_user = f"{room_prefix}{twilio_cleaned}"
-            sip_uri = f"{sip_user}@{sip_endpoint}"
+            # SIP URI: Just the domain - dispatch rule will extract room name from SIP "From" header
+            # The dispatch rule pattern call_<caller-number> will extract the caller number from the SIP "From" header
+            # and create the room automatically
+            sip_uri = sip_endpoint  # Just the domain, no room name - let dispatch rule handle it
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
             app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
-            app.logger.info(f"📋 [twilio_answer] Twilio caller: {twilio_caller} -> cleaned: {twilio_cleaned}")
-            app.logger.info(f"📋 [twilio_answer] Room name in SIP URI: {sip_user} (matches dispatch rule pattern)")
+            app.logger.info(f"📋 [twilio_answer] Twilio caller (From header): {twilio_caller} -> cleaned: {twilio_cleaned}")
+            app.logger.info(f"📋 [twilio_answer] Dispatch rule will extract caller from SIP 'From' header and create room: {predicted_room_name}")
             
             response = VoiceResponse()
             dial = Dial(
