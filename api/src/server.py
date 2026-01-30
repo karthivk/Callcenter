@@ -4,6 +4,7 @@ import os
 import uuid
 import asyncio
 import logging
+import time
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
@@ -77,30 +78,41 @@ def health():
 def root():
     return jsonify(service="Callcenter API", version="1.0.0"), 200
 
-# Generate unique room name (with collision check like Companion project)
-async def generate_room_name() -> str:
-    """Generate unique LiveKit room name, checking against existing rooms"""
+# Generate unique room name based on phone number (matches dispatch rule pattern: call_<caller-number>)
+async def generate_room_name(phone_number: str) -> str:
+    """Generate LiveKit room name from phone number to match dispatch rule pattern: call_<caller-number>"""
     from livekit.api import LiveKitAPI
     from livekit.api import ListRoomsRequest
     
+    # Clean phone number: remove +, spaces, dashes, parentheses
+    phone_cleaned = phone_number.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    
+    # Base room name: call_<phone-number>
+    base_name = f"call_{phone_cleaned}"
+    
+    # Check for existing rooms with this name (in case same number calls multiple times)
     lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     try:
-        # Get list of existing rooms
         resp = await lk_api.room.list_rooms(ListRoomsRequest())
         existing = set(r.name for r in resp.rooms)
     finally:
         await lk_api.aclose()
     
-    # Generate unique name (check for collisions)
-    max_attempts = 10
-    for _ in range(max_attempts):
-        name = f"call_{uuid.uuid4().hex[:8]}"
-        if name not in existing:
-            return name
-        app.logger.warning(f"⚠️ Room name collision detected: {name}, generating new name...")
+    # If room with this name doesn't exist, use it
+    if base_name not in existing:
+        return base_name
     
-    # Fallback: use longer UUID if collisions persist (extremely unlikely)
-    return f"call_{uuid.uuid4().hex[:16]}"
+    # If room exists (same number calling again), append timestamp to make it unique
+    # Format: call_<phone-number>_<timestamp>
+    timestamp = int(time.time())
+    unique_name = f"{base_name}_{timestamp}"
+    
+    # Check if this unique name also exists (extremely unlikely)
+    if unique_name not in existing:
+        return unique_name
+    
+    # Fallback: append UUID if still collision (extremely unlikely)
+    return f"{base_name}_{uuid.uuid4().hex[:8]}"
 
 @app.route("/call/initiate", methods=["POST"])
 def initiate_call():
@@ -118,12 +130,12 @@ def initiate_call():
         # Generate call ID and room name (with collision check)
         call_id = str(uuid.uuid4())
         
-        # Generate room name (async, so run in thread)
+        # Generate room name based on phone number (matches dispatch rule: call_<caller-number>)
         def get_room_name():
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             try:
-                return new_loop.run_until_complete(generate_room_name())
+                return new_loop.run_until_complete(generate_room_name(phone_number))
             finally:
                 new_loop.close()
         
@@ -345,10 +357,19 @@ def twilio_answer():
             if sip_endpoint.startswith('@'):
                 sip_endpoint = sip_endpoint[1:]
             
+            # Get phone number from call status for SIP URI (some systems require it)
+            phone_number = None
+            if call_id and call_id in call_status:
+                phone_number = call_status[call_id].get('phone', '').replace('+', '').replace(' ', '').replace('-', '')
+            
+            # Format: sip:room_name@livekit_sip_endpoint
+            # Alternative format with phone: sip:room_name+phone@livekit_sip_endpoint (if needed)
             sip_uri = f"{room_name}@{sip_endpoint}"
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
-            app.logger.info(f"📋 [twilio_answer] Room name: {room_name}, SIP endpoint: {sip_endpoint}")
+            app.logger.info(f"📋 [twilio_answer] Room name: {room_name}, SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
+            app.logger.info(f"📋 [twilio_answer] SIP URI format: sip:{room_name}@{sip_endpoint}")
+            app.logger.info(f"📋 [twilio_answer] ⚠️ If you get 404, check: 1) Dispatch rule matches 'call_' pattern, 2) SIP trunk is active, 3) Room exists")
             
             response = VoiceResponse()
             dial = Dial(
@@ -359,7 +380,8 @@ def twilio_answer():
                 record=False
             )
             # Add SIP URI - format: sip:room_name@livekit_sip_endpoint
-            # For LiveKit Cloud, no authentication is typically needed for inbound calls
+            # For LiveKit Cloud inbound calls, the room name should match the dispatch rule pattern
+            # The dispatch rule should have pattern: "call_" (with underscore)
             dial.sip(sip_uri)
             response.append(dial)
             
