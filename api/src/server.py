@@ -148,13 +148,15 @@ def initiate_call():
         if not phone_cleaned.startswith('+'):
             phone_cleaned = '+' + phone_cleaned.lstrip('+').replace(' ', '').replace('-', '')
         
-        # Clean Twilio number for room name prediction (for config storage)
-        twilio_cleaned = TWILIO_PHONE_NUMBER.replace('+', '').replace(' ', '').replace('-', '')
-        predicted_room_name = f"call_{twilio_cleaned}"
+        # Generate room name matching test call format: call__hello_<random_string>
+        # Test calls that work use this format: call__hello_wBmdU8qGrrLJ
+        # This matches the dispatch rule pattern better than call_<phone-number>
+        random_suffix = uuid.uuid4().hex[:12]  # 12 char random string like test calls
+        predicted_room_name = f"call__hello_{random_suffix}"
         
         app.logger.info(f"📋 [initiate_call] Twilio number (caller): {TWILIO_PHONE_NUMBER}")
         app.logger.info(f"📋 [initiate_call] End user number (called): {phone_number}")
-        app.logger.info(f"📋 [initiate_call] Predicted room name: {predicted_room_name} (will be created by dispatch rule)")
+        app.logger.info(f"📋 [initiate_call] Room name (matching test call format): {predicted_room_name}")
         
         # Store call info in memory (by call_id)
         call_status[call_id] = {
@@ -332,26 +334,25 @@ def twilio_answer():
             if call_id and call_id in call_status:
                 phone_number = call_status[call_id].get('phone', '')
             
-            # Get Twilio caller number from request (the "From" field in SIP call)
-            # The dispatch rule will extract this from the SIP "From" header to create/find the room
+            # Get Twilio caller number (the "From" field in the SIP call)
+            # Test calls that worked use: sip:+19892617714@4c5yt8sdin4.sip.livekit.cloud
+            # Test calls are "Trunking Originating" (sip-pstn) via SIP trunk
+            # Our TwiML calls are "Outgoing Dial" (SIP) - direct SIP, not via trunk
+            # We still use the same SIP URI format to match what works
             twilio_caller = request.form.get('From', TWILIO_PHONE_NUMBER)
             if not twilio_caller:
                 twilio_caller = TWILIO_PHONE_NUMBER
             
-            # Clean Twilio caller number for room name prediction
-            twilio_cleaned = twilio_caller.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
-            expected_room_name = f"call_{twilio_cleaned}"
-            
-            # SIP URI: Just the domain - dispatch rule extracts room name from SIP "From" header
-            # The dispatch rule pattern call_<caller-number> will extract caller from "From" header
-            # Room should already exist from initiate_call, so dispatch rule will route to it
-            sip_uri = sip_endpoint  # Just domain - let dispatch rule extract caller from "From" header
+            # SIP URI: Use phone number like test calls that worked
+            # Format: sip:+19892617714@domain (matches test call format)
+            # NOTE: Test calls are sip-pstn (via trunk), ours are SIP (direct) - different routing
+            sip_uri = f"{twilio_caller}@{sip_endpoint}"
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
-            app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
-            app.logger.info(f"📋 [twilio_answer] Twilio caller (From header): {twilio_caller} -> cleaned: {twilio_cleaned}")
-            app.logger.info(f"📋 [twilio_answer] Dispatch rule will extract caller from SIP 'From' header")
-            app.logger.info(f"📋 [twilio_answer] Expected room name: {expected_room_name} (should exist from initiate_call)")
+            app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, End user phone: {phone_number}")
+            app.logger.info(f"📋 [twilio_answer] Twilio caller (From): {twilio_caller}")
+            app.logger.info(f"📋 [twilio_answer] Using phone number in SIP URI (matching test call format)")
+            app.logger.info(f"📋 [twilio_answer] NOTE: Test calls are 'sip-pstn' (trunk), ours are 'SIP' (direct TwiML)")
             
             response = VoiceResponse()
             dial = Dial(
