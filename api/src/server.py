@@ -348,9 +348,18 @@ def twilio_answer():
             sip_uri = f"{room_name}@{sip_endpoint}"
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
+            app.logger.info(f"📋 [twilio_answer] Room name: {room_name}, SIP endpoint: {sip_endpoint}")
             
             response = VoiceResponse()
-            dial = Dial()
+            dial = Dial(
+                timeout=30,  # Wait up to 30 seconds for connection
+                action=f"{API_BASE_URL}/webhook/twilio/dial-status?call_id={call_id}&room_name={room_name}",
+                method='POST',
+                hangupOnStar=False,
+                record=False
+            )
+            # Add SIP URI - format: sip:room_name@livekit_sip_endpoint
+            # For LiveKit Cloud, no authentication is typically needed for inbound calls
             dial.sip(sip_uri)
             response.append(dial)
             
@@ -371,6 +380,35 @@ def twilio_answer():
         app.logger.error(traceback.format_exc())
         response = VoiceResponse()
         response.say("Sorry, there was an error connecting the call.")
+        return Response(str(response), mimetype='text/xml')
+
+@app.route("/webhook/twilio/dial-status", methods=["POST"])
+def twilio_dial_status():
+    """Handle Twilio dial status callbacks (for SIP connection)"""
+    try:
+        data = request.form.to_dict()
+        call_id = request.args.get('call_id')
+        room_name = request.args.get('room_name')
+        dial_call_status = data.get('DialCallStatus')
+        dial_call_sid = data.get('DialCallSid')
+        dial_call_duration = data.get('DialCallDuration')
+        
+        app.logger.info(f"📥 [twilio_dial_status] Dial status: {dial_call_status}, Room: {room_name}, Call ID: {call_id}")
+        app.logger.info(f"📥 [twilio_dial_status] Dial Call SID: {dial_call_sid}, Duration: {dial_call_duration}")
+        app.logger.info(f"📥 [twilio_dial_status] Full data: {data}")
+        
+        if dial_call_status == 'failed':
+            app.logger.error(f"❌ [twilio_dial_status] SIP connection failed for room {room_name}")
+            if call_id and call_id in call_status:
+                call_status[call_id]['status'] = 'sip_failed'
+        
+        # Return empty TwiML (call continues)
+        response = VoiceResponse()
+        return Response(str(response), mimetype='text/xml')
+        
+    except Exception as e:
+        app.logger.exception(f"❌ [twilio_dial_status] Error: {e}")
+        response = VoiceResponse()
         return Response(str(response), mimetype='text/xml')
 
 @app.route("/webhook/twilio/status", methods=["POST"])
