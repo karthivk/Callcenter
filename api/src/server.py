@@ -227,8 +227,20 @@ def initiate_call():
             ), 500
         
         # Webhook URL for when call is answered
-        webhook_url = f"{API_BASE_URL}/webhook/twilio/answer?call_id={call_id}&room_name={room_name}"
-        status_callback = f"{API_BASE_URL}/webhook/twilio/status"
+        # Validate and fix API_BASE_URL if needed
+        api_base = API_BASE_URL.strip().rstrip('/')
+        if not api_base.startswith(('http://', 'https://')):
+            app.logger.error(f"❌ [initiate_call] Invalid API_BASE_URL: {API_BASE_URL} (must start with http:// or https://)")
+            return jsonify(
+                success=False,
+                error=f"Invalid API_BASE_URL configuration: {API_BASE_URL}",
+                call_id=call_id
+            ), 500
+        
+        webhook_url = f"{api_base}/webhook/twilio/answer?call_id={call_id}&room_name={room_name}"
+        status_callback = f"{api_base}/webhook/twilio/status"
+        
+        app.logger.info(f"📞 [initiate_call] Webhook URL: {webhook_url}")
         
         try:
             # Make outbound call using Twilio Voice API

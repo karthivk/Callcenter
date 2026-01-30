@@ -14,6 +14,80 @@ This guide walks you through setting up MSG91, LiveKit Cloud, Google Cloud (Vert
 
 ---
 
+## Step 0: ngrok Setup (For Local Development with Twilio Webhooks)
+
+### Why ngrok?
+Twilio needs to send webhooks to your local server, but `localhost` isn't accessible from the internet. ngrok creates a secure tunnel to expose your local server.
+
+### 0.1 Install ngrok
+
+1. **Download ngrok:**
+   - Go to https://ngrok.com/download
+   - Download for Windows
+   - Extract `ngrok.exe` to a folder in your PATH (e.g., `C:\Program Files\ngrok\`)
+
+2. **Or use Chocolatey (if installed):**
+   ```powershell
+   choco install ngrok
+   ```
+
+### 0.2 Sign Up and Authenticate
+
+1. **Create free account:**
+   - Go to https://dashboard.ngrok.com/signup
+   - Sign up (free tier is sufficient)
+
+2. **Get your auth token:**
+   - Go to https://dashboard.ngrok.com/get-started/your-authtoken
+   - Copy your authtoken
+
+3. **Authenticate ngrok:**
+   ```powershell
+   ngrok config add-authtoken YOUR_AUTH_TOKEN
+   ```
+
+### 0.3 Start ngrok Tunnel
+
+1. **Start your Flask server first:**
+   ```powershell
+   cd C:\Users\karth\PycharmProjects\Callcenter\api\src
+   python server.py
+   ```
+   Your server should be running on `http://localhost:8081`
+
+2. **In a NEW terminal, start ngrok:**
+   ```powershell
+   ngrok http 8081
+   ```
+
+3. **Copy the HTTPS URL:**
+   You'll see output like:
+   ```
+   Forwarding  https://abc123-def456.ngrok-free.app -> http://localhost:8081
+   ```
+   Copy the HTTPS URL (the one starting with `https://`)
+
+4. **Update your `.env` file:**
+   ```bash
+   API_BASE_URL=https://abc123-def456.ngrok-free.app
+   ```
+   ⚠️ **Important:** Use the HTTPS URL, not HTTP!
+
+5. **Restart your Flask server** to pick up the new `API_BASE_URL`
+
+### 0.4 Keep ngrok Running
+
+- Keep the ngrok terminal window open while testing
+- The URL changes each time you restart ngrok (unless you have a paid plan)
+- Update `API_BASE_URL` in `.env` if you restart ngrok
+
+### Alternative: Static ngrok URL (Paid Plan)
+- Free ngrok URLs change on restart
+- Paid plans ($8/month) allow static domains like `https://yourname.ngrok.io`
+- Useful for production-like testing
+
+---
+
 ## Step 1: Google Cloud Setup (Vertex AI for Gemini)
 
 ### 1.1 Create/Select GCP Project

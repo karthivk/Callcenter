@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import AgentSession
+from livekit.agents import AgentSession, VoiceAssistantAgent
 from livekit.plugins import google, noise_cancellation
 
 # Load environment variables from config/.env
@@ -46,34 +46,30 @@ async def entrypoint(ctx: agents.JobContext):
     }
     voice = voice_map.get(language, 'Leda')
     
-    # Create session with Gemini Realtime
-    session = AgentSession(
-        userdata={},
-        llm=google.beta.realtime.RealtimeModel(
-            model="gemini-live-2.5-flash-native-audio",
-            vertexai=True,
-            project=os.getenv("GCP_PROJECT_ID"),
-            location=os.getenv("VERTEX_AI_LOCATION", "us-central1"),
-            voice=voice,
-            language=language,
-            instructions=(
-                f"You are a helpful assistant speaking in {language_name}. "
-                f"{prompt} "
-                "Keep responses concise and natural for phone conversations. "
-                "Speak clearly and wait for the user to finish before responding."
-            ),
-            temperature=0.6,
-            top_p=0.9,
-            top_k=40,
-        )
+    # Create LLM model
+    llm = google.beta.realtime.RealtimeModel(
+        model="gemini-live-2.5-flash-native-audio",
+        vertexai=True,
+        project=os.getenv("GCP_PROJECT_ID"),
+        location=os.getenv("VERTEX_AI_LOCATION", "us-central1"),
+        voice=voice,
+        language=language,
+        instructions=(
+            f"You are a helpful assistant speaking in {language_name}. "
+            f"{prompt} "
+            "Keep responses concise and natural for phone conversations. "
+            "Speak clearly and wait for the user to finish before responding."
+        ),
+        temperature=0.6,
+        top_p=0.9,
+        top_k=40,
     )
     
     logging.info(f"✅ RealtimeModel created - Language: {language_name}, Voice: {voice}")
     
-    # Start session with telephony noise cancellation
-    await session.start(
-        room=ctx.room,
-        agent=None,  # No custom agent class for minimal POC
+    # Create agent with the LLM (VoiceAssistantAgent creates session internally)
+    agent = VoiceAssistantAgent(
+        llm=llm,
         room_input_options=agents.RoomInputOptions(
             text_enabled=True,
             video_enabled=False,
@@ -81,19 +77,22 @@ async def entrypoint(ctx: agents.JobContext):
         )
     )
     
-    logging.info("✅ Agent session started")
+    # Start the agent in the room
+    await agent.start(ctx.room)
+    
+    logging.info("✅ Agent started")
     
     # Wait for connection
     await ctx.connect()
     
-    # Generate initial greeting
+    # Generate initial greeting using the agent's session
     greeting = f"Hello, this is an AI assistant calling you. How can I help you today?"
-    await session.generate_reply(instructions=greeting)
+    await agent.session.generate_reply(instructions=greeting)
     
     logging.info("✅ Initial greeting sent")
     
     # Keep agent running until call ends
-    # The session will automatically handle the conversation
+    # The agent will automatically handle the conversation
 
 def main():
     agent_name = os.getenv("LIVEKIT_AGENT_NAME", "callcenter-agent")
