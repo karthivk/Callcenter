@@ -15,7 +15,7 @@ from twilio.twiml.voice_response import VoiceResponse, Dial
 from livekit import api
 from livekit.api import LiveKitAPI
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
-from livekit.protocol.room import RoomConfiguration
+from livekit.protocol.room import CreateRoomRequest
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -76,10 +76,30 @@ def health():
 def root():
     return jsonify(service="Callcenter API", version="1.0.0"), 200
 
-# Generate unique room name
-def generate_room_name() -> str:
-    """Generate unique LiveKit room name"""
-    return f"call_{uuid.uuid4().hex[:8]}"
+# Generate unique room name (with collision check like Companion project)
+async def generate_room_name() -> str:
+    """Generate unique LiveKit room name, checking against existing rooms"""
+    from livekit.api import LiveKitAPI
+    from livekit.api import ListRoomsRequest
+    
+    lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+    try:
+        # Get list of existing rooms
+        resp = await lk_api.room.list_rooms(ListRoomsRequest())
+        existing = set(r.name for r in resp.rooms)
+    finally:
+        await lk_api.aclose()
+    
+    # Generate unique name (check for collisions)
+    max_attempts = 10
+    for _ in range(max_attempts):
+        name = f"call_{uuid.uuid4().hex[:8]}"
+        if name not in existing:
+            return name
+        app.logger.warning(f"⚠️ Room name collision detected: {name}, generating new name...")
+    
+    # Fallback: use longer UUID if collisions persist (extremely unlikely)
+    return f"call_{uuid.uuid4().hex[:16]}"
 
 @app.route("/call/initiate", methods=["POST"])
 def initiate_call():
@@ -94,9 +114,21 @@ def initiate_call():
         if not phone_number or not prompt:
             return jsonify(success=False, error="phone_number and prompt required"), 400
         
-        # Generate call ID and room name
+        # Generate call ID and room name (with collision check)
         call_id = str(uuid.uuid4())
-        room_name = generate_room_name()
+        
+        # Generate room name (async, so run in thread)
+        def get_room_name():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(generate_room_name())
+            finally:
+                new_loop.close()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(get_room_name)
+            room_name = future.result(timeout=5)
         
         # Clean phone number for Twilio (E.164 format)
         phone_cleaned = phone_number
@@ -143,13 +175,15 @@ def initiate_call():
                         # Create LiveKit API client inside async context
                         lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
                         try:
-                            room = await lk_api.room.create_room(
-                                name=room_name,
-                                metadata=room_metadata,
-                                configuration=RoomConfiguration(
-                                    agents=[RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)]
-                                )
-                            )
+                            # Create room using CreateRoomRequest
+                            # Set fields directly on the request object
+                            request = CreateRoomRequest()
+                            request.name = room_name
+                            request.metadata = room_metadata
+                            # Add agent dispatch directly to agents field
+                            agent = RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)
+                            request.agents.append(agent)
+                            room = await lk_api.room.create_room(request)
                             return room
                         finally:
                             await lk_api.aclose()
