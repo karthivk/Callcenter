@@ -295,9 +295,10 @@ def twilio_answer():
             if call_id and call_id in call_status:
                 phone_number = call_status[call_id].get('phone', '')
             
-            # SIP URI: Just the endpoint - dispatch rule will create room and route based on caller number
+            # SIP URI: Just the endpoint (domain) - dispatch rule will create room and route based on caller number
             # The dispatch rule pattern call_<caller-number> will be used to create the room
-            sip_uri = f"@{sip_endpoint}"
+            # Twilio's <Sip> tag expects: domain or user@domain (not @domain)
+            sip_uri = sip_endpoint  # Just the domain, no @ prefix
             
             app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
             app.logger.info(f"📋 [twilio_answer] SIP endpoint: {sip_endpoint}, Phone: {phone_number}")
