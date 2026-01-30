@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import AgentSession, VoiceAssistantAgent
+from livekit.agents import AgentSession, Agent
 from livekit.plugins import google, noise_cancellation
 
 # Load environment variables from config/.env
@@ -46,6 +46,14 @@ async def entrypoint(ctx: agents.JobContext):
     }
     voice = voice_map.get(language, 'Leda')
     
+    # Create instructions string
+    instructions = (
+        f"You are a helpful assistant speaking in {language_name}. "
+        f"{prompt} "
+        "Keep responses concise and natural for phone conversations. "
+        "Speak clearly and wait for the user to finish before responding."
+    )
+    
     # Create LLM model
     llm = google.beta.realtime.RealtimeModel(
         model="gemini-live-2.5-flash-native-audio",
@@ -54,12 +62,7 @@ async def entrypoint(ctx: agents.JobContext):
         location=os.getenv("VERTEX_AI_LOCATION", "us-central1"),
         voice=voice,
         language=language,
-        instructions=(
-            f"You are a helpful assistant speaking in {language_name}. "
-            f"{prompt} "
-            "Keep responses concise and natural for phone conversations. "
-            "Speak clearly and wait for the user to finish before responding."
-        ),
+        instructions=instructions,
         temperature=0.6,
         top_p=0.9,
         top_k=40,
@@ -67,9 +70,19 @@ async def entrypoint(ctx: agents.JobContext):
     
     logging.info(f"✅ RealtimeModel created - Language: {language_name}, Voice: {voice}")
     
-    # Create agent with the LLM (VoiceAssistantAgent creates session internally)
-    agent = VoiceAssistantAgent(
-        llm=llm,
+    # Create a minimal agent instance (required by SDK - provides label attribute)
+    agent = Agent(llm=llm, instructions=instructions)
+    
+    # Create session with Gemini Realtime
+    session = AgentSession(
+        userdata={},
+        llm=llm
+    )
+    
+    # Start session with telephony noise cancellation
+    await session.start(
+        room=ctx.room,
+        agent=agent,
         room_input_options=agents.RoomInputOptions(
             text_enabled=True,
             video_enabled=False,
@@ -77,17 +90,14 @@ async def entrypoint(ctx: agents.JobContext):
         )
     )
     
-    # Start the agent in the room
-    await agent.start(ctx.room)
-    
-    logging.info("✅ Agent started")
+    logging.info("✅ Agent session started")
     
     # Wait for connection
     await ctx.connect()
     
-    # Generate initial greeting using the agent's session
+    # Generate initial greeting
     greeting = f"Hello, this is an AI assistant calling you. How can I help you today?"
-    await agent.session.generate_reply(instructions=greeting)
+    await session.generate_reply(instructions=greeting)
     
     logging.info("✅ Initial greeting sent")
     
