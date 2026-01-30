@@ -3,8 +3,13 @@ import asyncio
 import json
 import logging
 import os
-import requests
 from pathlib import Path
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    HAS_HTTPX = False
+    import requests
 
 # IMPORTANT: Unset GOOGLE_APPLICATION_CREDENTIALS BEFORE any Google imports
 # This must happen before importing google.auth or any Google libraries
@@ -49,20 +54,41 @@ async def entrypoint(ctx: agents.JobContext):
     try:
         config_url = f"{api_base_url}/call/config?room_name={room_name}"
         logging.info(f"📞 Fetching call config from: {config_url}")
-        response = requests.get(config_url, timeout=5)
-        if response.status_code == 200:
-            config = response.json()
-            if config.get('success'):
-                language = config.get('language', language)
-                language_name = config.get('language_name', language_name)
-                prompt = config.get('prompt', prompt)
-                phone = config.get('phone', phone)
-                call_id = config.get('call_id', call_id)
-                logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
-            else:
-                logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
+        
+        # Use async HTTP client if available, otherwise use thread pool for requests
+        if HAS_HTTPX:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(config_url)
+                if response.status_code == 200:
+                    config = response.json()
+                    if config.get('success'):
+                        language = config.get('language', language)
+                        language_name = config.get('language_name', language_name)
+                        prompt = config.get('prompt', prompt)
+                        phone = config.get('phone', phone)
+                        call_id = config.get('call_id', call_id)
+                        logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
+                    else:
+                        logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
+                else:
+                    logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
         else:
-            logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
+            # Fallback: run blocking request in thread pool
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, lambda: requests.get(config_url, timeout=5))
+            if response.status_code == 200:
+                config = response.json()
+                if config.get('success'):
+                    language = config.get('language', language)
+                    language_name = config.get('language_name', language_name)
+                    prompt = config.get('prompt', prompt)
+                    phone = config.get('phone', phone)
+                    call_id = config.get('call_id', call_id)
+                    logging.info(f"✅ Call config fetched - Phone: {phone}, Language: {language_name}, Call ID: {call_id}")
+                else:
+                    logging.warning(f"⚠️ API returned success=False: {config.get('error')}")
+            else:
+                logging.warning(f"⚠️ Failed to fetch call config: HTTP {response.status_code}")
     except Exception as e:
         logging.warning(f"⚠️ Could not fetch call config from API: {e}, using defaults")
     
