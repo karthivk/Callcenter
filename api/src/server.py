@@ -262,14 +262,15 @@ def initiate_call():
         app.logger.exception(f"❌ [initiate_call] Error: {e}")
         return jsonify(success=False, error=str(e)), 500
 
-@app.route("/webhook/twilio/answer", methods=["POST"])
+@app.route("/webhook/twilio/answer", methods=["GET", "POST"])
 def twilio_answer():
     """Handle Twilio webhook when call is answered - return TwiML to connect to LiveKit"""
     try:
-        call_id = request.args.get('call_id')
-        call_sid = request.form.get('CallSid')
+        # Twilio can call with GET or POST, handle both
+        call_id = request.args.get('call_id') or request.form.get('call_id')
+        call_sid = request.args.get('CallSid') or request.form.get('CallSid')
         
-        app.logger.info(f"📥 [twilio_answer] Call answered: {call_sid}, Call ID: {call_id}")
+        app.logger.info(f"📥 [twilio_answer] Webhook called - Method: {request.method}, Call SID: {call_sid}, Call ID: {call_id}")
         app.logger.info(f"📥 [twilio_answer] Request args: {dict(request.args)}")
         app.logger.info(f"📥 [twilio_answer] Request form: {dict(request.form)}")
         app.logger.info(f"📥 [twilio_answer] Dispatch rule will create room automatically when SIP call arrives")
