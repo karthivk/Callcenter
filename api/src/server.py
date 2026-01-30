@@ -15,7 +15,7 @@ from twilio.twiml.voice_response import VoiceResponse, Dial
 from livekit import api
 from livekit.api import LiveKitAPI
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
-from livekit.protocol.room import CreateRoomRequest
+from livekit.protocol.room import CreateRoomRequest, UpdateRoomMetadataRequest, RoomConfiguration
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -62,6 +62,7 @@ if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
 
 # In-memory storage for POC (no database)
 call_status = {}  # {call_id: {'status': '...', 'phone': '...', 'language': '...', 'prompt': '...', 'room_name': '...', 'twilio_call_sid': '...'}}
+room_config = {}  # {room_name: {'phone': '...', 'language': '...', 'language_name': '...', 'prompt': '...', 'call_id': '...'}}
 
 # Health check endpoints
 @app.route("/healthz", methods=["GET"])
@@ -135,7 +136,7 @@ def initiate_call():
         if not phone_cleaned.startswith('+'):
             phone_cleaned = '+' + phone_cleaned.lstrip('+').replace(' ', '').replace('-', '')
         
-        # Store call info in memory
+        # Store call info in memory (by call_id)
         call_status[call_id] = {
             'status': 'initiating',
             'phone': phone_number,
@@ -145,6 +146,15 @@ def initiate_call():
             'room_name': room_name,
             'twilio_call_sid': None,
             'created_at': datetime.now().isoformat()
+        }
+        
+        # Store call config by room_name for agent lookup (simpler than room metadata)
+        room_config[room_name] = {
+            'phone': phone_number,
+            'language': language,
+            'language_name': language_name,
+            'prompt': prompt,
+            'call_id': call_id
         }
         
         app.logger.info(f"📞 [initiate_call] Initiating call: {phone_number} -> {room_name}")
@@ -178,10 +188,26 @@ def initiate_call():
                             request = CreateRoomRequest()
                             request.name = room_name
                             request.metadata = room_metadata
-                            # Add agent dispatch directly to agents field
-                            agent = RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)
-                            request.agents.append(agent)
+                            
+                            # Use RoomConfiguration for agent dispatch (like Companion does)
+                            room_config = RoomConfiguration()
+                            room_config.agents.append(RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME))
+                            request.configuration = room_config
+                            
                             room = await lk_api.room.create_room(request)
+                            
+                            # Update room metadata after creation to ensure it's persisted
+                            # Sometimes metadata needs to be set after room creation
+                            try:
+                                update_request = UpdateRoomMetadataRequest()
+                                update_request.room = room_name
+                                update_request.metadata = room_metadata
+                                await lk_api.room.update_room_metadata(update_request)
+                                logging.info(f"✅ [initiate_call] Room metadata updated after creation")
+                            except Exception as update_error:
+                                # Log but don't fail if update fails - metadata should still be set on creation
+                                logging.warning(f"⚠️ Could not update room metadata (this is OK if metadata was set on creation): {update_error}")
+                            
                             return room
                         finally:
                             await lk_api.aclose()
@@ -196,7 +222,13 @@ def initiate_call():
                 future = executor.submit(create_room_in_thread)
                 room = future.result(timeout=10)
             
+            # Log room details to verify metadata was set
             app.logger.info(f"✅ [initiate_call] LiveKit room created: {room_name} with agent: {LIVEKIT_AGENT_NAME}")
+            app.logger.info(f"📋 [initiate_call] Room metadata set: {room_metadata}")
+            if hasattr(room, 'metadata'):
+                app.logger.info(f"📋 [initiate_call] Room metadata (from response): {room.metadata}")
+            if hasattr(room, 'name'):
+                app.logger.info(f"📋 [initiate_call] Room name (from response): {room.name}")
             
         except Exception as e:
             app.logger.error(f"❌ [initiate_call] LiveKit room creation error: {e}")
@@ -289,31 +321,55 @@ def twilio_answer():
         room_name = request.args.get('room_name')
         call_sid = request.form.get('CallSid')
         
-        app.logger.info(f"📥 [twilio_answer] Call answered: {call_sid}, Room: {room_name}")
+        app.logger.info(f"📥 [twilio_answer] Call answered: {call_sid}, Room: {room_name}, Call ID: {call_id}")
+        app.logger.info(f"📥 [twilio_answer] Request args: {dict(request.args)}")
+        app.logger.info(f"📥 [twilio_answer] Request form: {dict(request.form)}")
         
         if call_id and call_id in call_status:
             call_status[call_id]['status'] = 'answered'
         
+        # Validate room_name
+        if not room_name:
+            app.logger.error("❌ [twilio_answer] Missing room_name in request")
+            response = VoiceResponse()
+            response.say("Sorry, there was an error connecting the call. Missing room information.")
+            return Response(str(response), mimetype='text/xml')
+        
         # If LiveKit SIP endpoint is configured, connect via SIP
         if LIVEKIT_SIP_ENDPOINT:
             # Create TwiML to dial LiveKit SIP endpoint
+            # Format: sip:room_name@livekit_sip_endpoint
+            # Remove any protocol prefix if present
+            sip_endpoint = LIVEKIT_SIP_ENDPOINT.strip()
+            if sip_endpoint.startswith('sip:'):
+                sip_endpoint = sip_endpoint[4:]
+            if sip_endpoint.startswith('@'):
+                sip_endpoint = sip_endpoint[1:]
+            
+            sip_uri = f"{room_name}@{sip_endpoint}"
+            
+            app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: sip:{sip_uri}")
+            
             response = VoiceResponse()
             dial = Dial()
-            # Format: sip:room_name@livekit_sip_endpoint
-            dial.sip(f"{room_name}@{LIVEKIT_SIP_ENDPOINT}")
+            dial.sip(sip_uri)
             response.append(dial)
             
-            app.logger.info(f"✅ [twilio_answer] Connecting to LiveKit SIP: {room_name}@{LIVEKIT_SIP_ENDPOINT}")
-            return Response(str(response), mimetype='text/xml')
+            twiml_xml = str(response)
+            app.logger.info(f"📤 [twilio_answer] TwiML Response:\n{twiml_xml}")
+            
+            return Response(twiml_xml, mimetype='text/xml')
         else:
             # Fallback: Just say something (for testing without SIP)
+            app.logger.warning("⚠️ [twilio_answer] LIVEKIT_SIP_ENDPOINT not configured, using fallback")
             response = VoiceResponse()
             response.say("Connecting to AI assistant. Please wait.")
-            app.logger.warning("⚠️ [twilio_answer] LIVEKIT_SIP_ENDPOINT not configured, using fallback")
             return Response(str(response), mimetype='text/xml')
         
     except Exception as e:
         app.logger.exception(f"❌ [twilio_answer] Error: {e}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         response = VoiceResponse()
         response.say("Sorry, there was an error connecting the call.")
         return Response(str(response), mimetype='text/xml')
@@ -374,6 +430,25 @@ def get_call_status():
         phone=call_status[call_id]['phone'],
         room_name=call_status[call_id].get('room_name'),
         twilio_call_sid=call_status[call_id].get('twilio_call_sid')
+    )
+
+@app.route("/call/config", methods=["GET"])
+def get_call_config():
+    """Get call configuration by room name (for agent)"""
+    room_name = request.args.get('room_name')
+    
+    if not room_name or room_name not in room_config:
+        return jsonify(success=False, error="Room config not found"), 404
+    
+    config = room_config[room_name]
+    return jsonify(
+        success=True,
+        room_name=room_name,
+        phone=config['phone'],
+        language=config['language'],
+        language_name=config['language_name'],
+        prompt=config['prompt'],
+        call_id=config['call_id']
     )
 
 if __name__ == '__main__':

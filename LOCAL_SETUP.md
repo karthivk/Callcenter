@@ -115,31 +115,43 @@ gcloud services enable aiplatform.googleapis.com
 gcloud services enable generativelanguage.googleapis.com
 ```
 
-### 1.3 Create Service Account
+### 1.3 Set Up Application Default Credentials (ADC)
 
-1. Go to **IAM & Admin** > **Service Accounts**
-2. Click **Create Service Account**
-3. Name: `callcenter-agent`
-4. Grant roles:
-   - `Vertex AI User` (roles/aiplatform.user)
-   - `Service Account User` (roles/iam.serviceAccountUser)
-5. Click **Create Key** > **JSON** and download the key file
-6. Save it as `config/gcp-service-account.json` (add to `.gitignore`)
+**No service account key file needed!** The code uses Application Default Credentials (ADC), which automatically uses:
+- Your `gcloud auth` credentials (for local development)
+- The Cloud Run service account (when deployed)
+- VM service account (when running on GCE)
 
-### 1.4 Set Application Default Credentials
+#### For Local Development:
 
-```bash
-# Option 1: Use service account key file
-export GOOGLE_APPLICATION_CREDENTIALS="C:\Users\karth\Cursor_Version\Callcenter\config\gcp-service-account.json"
+1. **Install Google Cloud SDK** (if not already installed):
+   - Download from: https://cloud.google.com/sdk/docs/install
 
-# Option 2: Use gcloud auth (for local dev)
-gcloud auth application-default login
-```
+2. **Authenticate with your Google account:**
+   ```powershell
+   gcloud auth login
+   gcloud auth application-default login
+   ```
 
-**Note:** For Windows PowerShell, use:
-```powershell
-$env:GOOGLE_APPLICATION_CREDENTIALS="C:\Users\karth\Cursor_Version\Callcenter\config\gcp-service-account.json"
-```
+3. **Set your project:**
+   ```powershell
+   gcloud config set project delta-clarity-483003-f1
+   ```
+
+4. **Grant your user account Vertex AI permissions:**
+   - Go to: https://console.cloud.google.com/iam-admin/iam?project=delta-clarity-483003-f1
+   - Find your user account (the email you used for `gcloud auth login`)
+   - Click the edit icon (pencil)
+   - Add role: `Vertex AI User` (roles/aiplatform.user)
+   - Click "Save"
+
+**That's it!** No service account key file needed. The code will automatically use your authenticated credentials.
+
+#### For Cloud Run Deployment:
+
+- Cloud Run will use the default Compute Engine service account
+- Make sure that service account has `Vertex AI User` role
+- No code changes needed - ADC works automatically
 
 ---
 
@@ -265,7 +277,8 @@ $env:LIVEKIT_API_KEY="your_key"
 $env:LIVEKIT_API_SECRET="your_secret"
 $env:GCP_PROJECT_ID="your_project_id"
 $env:VERTEX_AI_LOCATION="us-central1"
-$env:GOOGLE_APPLICATION_CREDENTIALS="C:\Users\karth\Cursor_Version\Callcenter\config\gcp-service-account.json"
+# No GOOGLE_APPLICATION_CREDENTIALS needed - using Application Default Credentials (ADC)
+# Just make sure you've run: gcloud auth application-default login
 ```
 
 **Windows CMD:**
@@ -276,7 +289,8 @@ set LIVEKIT_API_KEY=your_key
 set LIVEKIT_API_SECRET=your_secret
 set GCP_PROJECT_ID=your_project_id
 set VERTEX_AI_LOCATION=us-central1
-set GOOGLE_APPLICATION_CREDENTIALS=C:\Users\karth\Cursor_Version\Callcenter\config\gcp-service-account.json
+# No GOOGLE_APPLICATION_CREDENTIALS needed - using Application Default Credentials (ADC)
+# Just make sure you've run: gcloud auth application-default login
 ```
 
 ---
@@ -351,7 +365,7 @@ The agent will:
 - `LIVEKIT_AGENT_NAME` - Agent name (must match in LiveKit Cloud dashboard)
 - `GCP_PROJECT_ID` - Your Google Cloud project ID
 - `VERTEX_AI_LOCATION` - Vertex AI region (e.g., `us-central1`)
-- `GOOGLE_APPLICATION_CREDENTIALS` - Path to service account JSON (or use gcloud auth)
+- **No `GOOGLE_APPLICATION_CREDENTIALS` needed** - Uses Application Default Credentials (ADC)
 
 **Important:** The `LIVEKIT_URL` for agents should be the WebSocket URL, not the HTTP URL:
 - HTTP URL: `https://your-project.livekit.cloud` (for API calls)
@@ -415,7 +429,7 @@ pip install -r api/requirements.txt
 - Verify `GCP_PROJECT_ID` and `VERTEX_AI_LOCATION`
 - Check service account has correct permissions
 - Ensure Vertex AI API is enabled
-- Verify `GOOGLE_APPLICATION_CREDENTIALS` path is correct
+- Verify you've run `gcloud auth application-default login` for local dev
 
 **Import errors:**
 ```bash
@@ -521,7 +535,7 @@ LIVEKIT_AGENT_NAME
 # Google Cloud
 GCP_PROJECT_ID
 VERTEX_AI_LOCATION
-GOOGLE_APPLICATION_CREDENTIALS
+# No GOOGLE_APPLICATION_CREDENTIALS needed - uses Application Default Credentials (ADC)
 
 # API
 API_BASE_URL
