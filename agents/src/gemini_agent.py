@@ -76,21 +76,24 @@ async def entrypoint(ctx: agents.JobContext):
     voice = voice_map.get(language, 'Leda')
     
     # Create instructions string
+    # Gemini 2.5 doesn't support language parameter - include it in the prompt
     instructions = (
-        f"You are a helpful assistant speaking in {language_name}. "
-        f"{prompt} "
+        f"You are a helpful assistant. You MUST speak ONLY in {language_name} ({language}). "
+        f"Your role and instructions: {prompt} "
         "Keep responses concise and natural for phone conversations. "
-        "Speak clearly and wait for the user to finish before responding."
+        "Speak clearly and wait for the user to finish before responding. "
+        f"Always respond in {language_name}."
     )
     
     # Create LLM model
+    # NOTE: Gemini 2.5 doesn't support language parameter - language is included in instructions above
     llm = google.beta.realtime.RealtimeModel(
         model="gemini-live-2.5-flash-native-audio",
         vertexai=True,
         project=os.getenv("GCP_PROJECT_ID"),
         location=os.getenv("VERTEX_AI_LOCATION", "us-central1"),
         voice=voice,
-        language=language,
+        # language=language,  # REMOVED: Gemini 2.5 doesn't support this parameter
         instructions=instructions,
         temperature=0.6,
         top_p=0.9,
@@ -124,11 +127,19 @@ async def entrypoint(ctx: agents.JobContext):
     # Wait for connection
     await ctx.connect()
     
-    # Generate initial greeting
-    greeting = f"Hello, this is an AI assistant calling you. How can I help you today?"
-    await session.generate_reply(instructions=greeting)
+    # Generate initial greeting using the prompt from frontend
+    # The prompt should guide the conversation - use it as the initial message
+    # If prompt already starts with a greeting, use it directly; otherwise create one
+    if prompt.strip().lower().startswith(('hello', 'hi', 'greetings', 'good')):
+        # Prompt already contains a greeting
+        initial_message = prompt
+    else:
+        # Create a greeting that incorporates the prompt
+        initial_message = f"Hello. {prompt}"
     
-    logging.info("✅ Initial greeting sent")
+    await session.generate_reply(instructions=initial_message)
+    
+    logging.info(f"✅ Initial greeting sent (using prompt from frontend): {initial_message[:50]}...")
     
     # Keep agent running until call ends
     # The agent will automatically handle the conversation
