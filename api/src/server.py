@@ -80,7 +80,11 @@ def root():
 
 # Generate unique room name based on phone number (matches dispatch rule pattern: call_<caller-number>)
 async def generate_room_name(phone_number: str) -> str:
-    """Generate LiveKit room name from phone number to match dispatch rule pattern: call_<caller-number>"""
+    """Generate LiveKit room name from phone number to match dispatch rule pattern: call_<caller-number>
+    
+    Note: For inbound SIP calls, the 'caller-number' is the Twilio number making the SIP call to LiveKit,
+    not the end user's number. This matches the dispatch rule pattern.
+    """
     from livekit.api import LiveKitAPI
     from livekit.api import ListRoomsRequest
     
@@ -88,7 +92,11 @@ async def generate_room_name(phone_number: str) -> str:
     phone_cleaned = phone_number.replace('+', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
     
     # Base room name: call_<phone-number>
+    # This should match the dispatch rule pattern: call_<caller-number>
     base_name = f"call_{phone_cleaned}"
+    
+    # Log which number is being used (for debugging)
+    logging.info(f"📋 [generate_room_name] Using phone number: {phone_number} -> cleaned: {phone_cleaned} -> room name: {base_name}")
     
     # Check for existing rooms with this name (in case same number calls multiple times)
     lk_api = LiveKitAPI(LIVEKIT_HTTP, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
@@ -130,12 +138,20 @@ def initiate_call():
         # Generate call ID and room name (with collision check)
         call_id = str(uuid.uuid4())
         
-        # Generate room name based on phone number (matches dispatch rule: call_<caller-number>)
+        # Generate room name based on Twilio phone number (caller number)
+        # Dispatch rule pattern is call_<caller-number>, where caller is the Twilio number making the SIP call
+        if not TWILIO_PHONE_NUMBER:
+            return jsonify(success=False, error="TWILIO_PHONE_NUMBER not configured"), 500
+        
+        app.logger.info(f"📋 [initiate_call] Using Twilio number (caller) for room name: {TWILIO_PHONE_NUMBER}")
+        app.logger.info(f"📋 [initiate_call] End user number (called): {phone_number}")
+        
         def get_room_name():
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             try:
-                return new_loop.run_until_complete(generate_room_name(phone_number))
+                # Use Twilio phone number (the SIP caller) for room name
+                return new_loop.run_until_complete(generate_room_name(TWILIO_PHONE_NUMBER))
             finally:
                 new_loop.close()
         
