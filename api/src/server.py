@@ -15,7 +15,7 @@ from twilio.twiml.voice_response import VoiceResponse, Dial
 from livekit import api
 from livekit.api import LiveKitAPI
 from livekit.protocol.agent_dispatch import RoomAgentDispatch
-from livekit.protocol.room import CreateRoomRequest, UpdateRoomMetadataRequest, RoomConfiguration
+from livekit.protocol.room import CreateRoomRequest, UpdateRoomMetadataRequest
 
 # Load environment variables from config/.env
 env_path = Path(__file__).parent.parent.parent / "config" / ".env"
@@ -189,10 +189,9 @@ def initiate_call():
                             request.name = room_name
                             request.metadata = room_metadata
                             
-                            # Use RoomConfiguration for agent dispatch (like Companion does)
-                            room_config = RoomConfiguration()
-                            room_config.agents.append(RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME))
-                            request.configuration = room_config
+                            # Add agent dispatch directly to agents field
+                            agent = RoomAgentDispatch(agent_name=LIVEKIT_AGENT_NAME)
+                            request.agents.append(agent)
                             
                             room = await lk_api.room.create_room(request)
                             
